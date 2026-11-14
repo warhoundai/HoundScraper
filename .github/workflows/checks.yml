@@ -1,0 +1,51 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: houndscraper_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      HOUNDSCRAPER_TEST_DATABASE_URL: postgresql://postgres:test-only@127.0.0.1:5432/houndscraper_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with: {node-version: '22'}
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - run: python -m playwright install --with-deps chromium
+      - run: python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print('BROWSER_EXECUTABLE='+p.chromium.executable_path); p.stop()" >> "$GITHUB_ENV"
+      - run: pytest -q
+      - run: node --test sdk/js/*.test.mjs
+      - run: npm ci && npm run typecheck && npm run build -- --outDir ../src/houndscraper/static --emptyOutDir
+        working-directory: dashboard
+      - run: npm audit
+        working-directory: dashboard
+      - run: pip-audit --strict -r requirements-dev.lock
+      - run: python scripts/audit-source.py
+      - run: python -m build
+  container:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: container-test-only
+          POSTGRES_DB: houndscraper
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {persist-credentials: false}
+      - run: docker build -t houndscraper:test .
+      - run: python scripts/container-smoke.py

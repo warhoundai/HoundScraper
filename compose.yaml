@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: houndscraper
+      POSTGRES_DB: houndscraper
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python scripts/configure.py first}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U houndscraper -d houndscraper]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+    restart: unless-stopped
+  api:
+    build: .
+    ports: ["127.0.0.1:8081:8081"]
+    environment:
+      HOUNDSCRAPER_DATABASE_URL: postgresql://houndscraper:${POSTGRES_PASSWORD}@postgres:5432/houndscraper
+      HOUNDSCRAPER_API_KEYS: ${HOUNDSCRAPER_API_KEYS}
+      HOUNDSCRAPER_ENCRYPTION_KEY: ${HOUNDSCRAPER_ENCRYPTION_KEY}
+      HOUNDSCRAPER_WEBHOOK_KEY: ${HOUNDSCRAPER_WEBHOOK_KEY}
+      HOUNDBROWSER_ENDPOINT: ${HOUNDBROWSER_ENDPOINT:-}
+      HOUNDBROWSER_SERVICE_KEY: ${HOUNDBROWSER_SERVICE_KEY}
+      HOUNDSCRAPER_PARSER_ENDPOINT: ${HOUNDSCRAPER_PARSER_ENDPOINT:-}
+      HOUNDSCRAPER_PARSER_KEY: ${HOUNDSCRAPER_PARSER_KEY}
+      HOUNDSCRAPER_LLM_ENDPOINT: ${HOUNDSCRAPER_LLM_ENDPOINT:-}
+      HOUNDSCRAPER_LLM_MODEL: ${HOUNDSCRAPER_LLM_MODEL:-}
+      HOUNDSCRAPER_LLM_KEY: ${HOUNDSCRAPER_LLM_KEY:-}
+      HOUNDSCRAPER_SEARCH_PROVIDER: ${HOUNDSCRAPER_SEARCH_PROVIDER:-}
+      HOUNDSCRAPER_SEARCH_KEY: ${HOUNDSCRAPER_SEARCH_KEY:-}
+      HOUNDSCRAPER_SEARCH_ENDPOINT: ${HOUNDSCRAPER_SEARCH_ENDPOINT:-}
+    volumes: [artifacts:/data]
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [internal, egress]
+    read_only: true
+    tmpfs: [/tmp:size=64m,mode=1777]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+  browser:
+    profiles: [browser]
+    build: {context: ., dockerfile: Dockerfile.browser}
+    environment:
+      HOUNDBROWSER_SERVICE_KEY: ${HOUNDBROWSER_SERVICE_KEY}
+    networks: [internal, egress]
+    shm_size: 1gb
+    mem_limit: 2g
+    cpus: 2
+    tmpfs: [/tmp:size=512m,mode=1777]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+  parser:
+    profiles: [parser]
+    build: {context: ., dockerfile: Dockerfile.parser}
+    environment:
+      HOUNDSCRAPER_PARSER_KEY: ${HOUNDSCRAPER_PARSER_KEY}
+      HF_HUB_OFFLINE: '1'
+    volumes: [parser-models:/models:ro]
+    networks: [internal]
+    mem_limit: 4g
+    cpus: 2
+    tmpfs: [/tmp:size=1g,mode=1777]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+networks:
+  internal: {internal: true}
+  egress: {}
+volumes:
+  postgres-data: {}
+  artifacts: {}
+  parser-models: {}

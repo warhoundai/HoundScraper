@@ -1,0 +1,6 @@
+HoundScraper
+Copyright 2026 WarHound AI
+
+This project includes browser_network.py from WarHound AI's HoundBrowser v0.1.0, also Apache-2.0. Source: https://github.com/warhoundai/HoundBrowser/blob/v0.1.0/src/houndbrowser/network.py
+
+No Firecrawl implementation, documentation or assets are included. Firecrawl is a feature and interoperability reference only.
