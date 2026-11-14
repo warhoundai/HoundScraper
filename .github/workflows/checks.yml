@@ -29,6 +29,7 @@ jobs:
       - run: node --test sdk/js/*.test.mjs
       - run: npm ci && npm run typecheck && npm run build -- --outDir ../src/houndscraper/static --emptyOutDir
         working-directory: dashboard
+      - run: node dashboard/verify.mjs
       - run: npm audit
         working-directory: dashboard
       - run: pip-audit --strict -r requirements-dev.lock

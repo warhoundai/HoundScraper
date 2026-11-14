@@ -2,7 +2,8 @@
 import json,re,subprocess,sys
 from pathlib import Path
 root=Path(__file__).parents[1]
-files=subprocess.check_output(['git','ls-files','-z'],cwd=root).decode().split('\0')
+files=[f for f in subprocess.check_output(['git','ls-files','-z'],cwd=root).decode().split('\0') if f and not f.startswith('src/houndscraper/static/')]
+files.extend(str(p.relative_to(root)) for p in (root/'src/houndscraper/static').rglob('*') if p.is_file())
 patterns=[r'AKIA[0-9A-Z]{16}',r'gh[pousr]_[A-Za-z0-9]{30,}',r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',r'vcp_[A-Za-z0-9]{30,}',r'AIza[0-9A-Za-z_-]{30,}']
 findings=[]
 for name in files:

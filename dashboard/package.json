@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "build": "vite build --outDir ../src/houndscraper/static --emptyOutDir",
+    "typecheck": "tsc --noEmit",
+    "postbuild": "node -e \"require('node:fs').copyFileSync('../sdk/js/index.mjs','../src/houndscraper/static/sdk.mjs')\""
   },
   "dependencies": {
     "react": "^19.0.0",
