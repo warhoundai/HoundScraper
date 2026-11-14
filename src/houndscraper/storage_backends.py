@@ -21,7 +21,7 @@ class S3Backend:
             try:import boto3
             except ImportError:raise ScrapeError('CAPABILITY_UNAVAILABLE','Install the s3 extra for S3-compatible storage',503)
             from botocore.config import Config
-            client=boto3.client('s3',endpoint_url=os.environ.get('HOUNDSCRAPER_S3_ENDPOINT'),config=Config(connect_timeout=10,read_timeout=30,retries={'max_attempts':2}))
+            client=boto3.client('s3',endpoint_url=os.environ.get('HOUNDSCRAPER_S3_ENDPOINT') or None,config=Config(connect_timeout=10,read_timeout=30,retries={'max_attempts':2}))
         self.client=client
     def key(self,key):return (self.prefix+'/' if self.prefix else '')+key
     def put(self,key,body,mime):self.client.put_object(Bucket=self.bucket,Key=self.key(key),Body=body,ContentType=mime,ServerSideEncryption='AES256')
