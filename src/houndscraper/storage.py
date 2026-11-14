@@ -8,25 +8,28 @@ from .errors import ScrapeError
 
 class Artifacts:
     def __init__(self,store,root):
-        self.store=store;self.root=Path(root).resolve();self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
+        self.store=store
+        from .storage_backends import LocalBackend,S3Backend
+        self.backend=S3Backend(root) if root.startswith('s3://') else LocalBackend(root)
     def put(self,tenant,body,mime):
         aid=uuid.uuid4().hex;key=hashlib.sha256(tenant.encode()).hexdigest()+'/'+aid
-        path=self.root/key;path.parent.mkdir(mode=0o700,exist_ok=True)
-        fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
-        with os.fdopen(fd,'wb') as f:f.write(body)
+        self.backend.put(key,body,mime)
         sha=hashlib.sha256(body).hexdigest()
         with self.store.pool.connection() as c:c.execute('INSERT INTO hs_artifacts VALUES(%s,%s,%s,%s,%s,%s,%s)',(aid,tenant,key,mime,sha,len(body),time.time()))
         return {'id':aid,'url':'/v1/artifacts/'+aid,'sha256':sha,'bytes':len(body),'content_type':mime}
     def get(self,tenant,aid):
         with self.store.pool.connection() as c:row=c.execute('SELECT * FROM hs_artifacts WHERE tenant=%s AND id=%s',(tenant,aid)).fetchone()
         if not row:raise ScrapeError('NOT_FOUND','Artifact not found',404)
-        path=self.root/row['key'];body=path.read_bytes()
+        body=self.backend.get(row['key'],row['bytes'])
         if hashlib.sha256(body).hexdigest()!=row['sha256']:raise ScrapeError('INTEGRITY_ERROR','Artifact integrity check failed',500)
         return body,row
     def expire(self,days):
+        # Delete storage first. A failed deletion keeps metadata for the next cleanup.
         with self.store.pool.connection() as c:
-            rows=c.execute('DELETE FROM hs_artifacts WHERE created<%s RETURNING key',(time.time()-days*86400,)).fetchall()
-        for row in rows:(self.root/row['key']).unlink(missing_ok=True)
+            rows=c.execute('SELECT id,key FROM hs_artifacts WHERE created<%s',(time.time()-days*86400,)).fetchall()
+            for row in rows:
+                self.backend.delete(row['key'])
+                c.execute('DELETE FROM hs_artifacts WHERE id=%s',(row['id'],))
 
 class Credentials:
     def __init__(self,store,key):self.store=store;self.cipher=Fernet(key.encode()) if key else None

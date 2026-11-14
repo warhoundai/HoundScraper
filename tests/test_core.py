@@ -50,7 +50,12 @@ def test_idempotency_and_tenant_isolation(store):
 def test_concurrent_claims_do_not_exceed_page_budget(store):
     job=store.create('alpha',JobRequest(kind='batch',urls=[f'https://fixture.example/{i}' for i in range(10)],max_pages=2))
     with ThreadPoolExecutor(max_workers=8) as pool:claims=list(pool.map(lambda _:store.claim(),range(8)))
-    assert len([c for c in claims if c])==2
+    claimed=[c for c in claims if c]
+    # SKIP LOCKED may return no work while another claimant holds the job row.
+    # It promises nonblocking claims and a ceiling, not simultaneous saturation.
+    assert 1<=len(claimed)<=2
+    while (next_item:=store.claim()) is not None:claimed.append(next_item)
+    assert len(claimed)==2
     assert store.get('alpha',job['id'])['inflight']==2
 
 def test_leases_recover_and_old_worker_cannot_commit(store):

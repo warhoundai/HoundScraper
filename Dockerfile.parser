@@ -3,6 +3,6 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HF_HOME=/models
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip install --no-cache-dir '.[parser]' && useradd --uid 10001 --create-home parser
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir '.[parser]' && useradd --uid 10001 --create-home parser
 USER 10001:10001
 CMD ["uvicorn","houndscraper.parser_worker:create_parser_app","--factory","--host","0.0.0.0","--port","8083","--no-access-log"]

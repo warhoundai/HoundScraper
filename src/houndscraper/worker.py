@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import psycopg
 import fnmatch
 import random
 import time
@@ -31,9 +33,13 @@ class Worker:
         async def heartbeat():
             while True:
                 await asyncio.sleep(2)
-                if not self.store.heartbeat(item,self.engine.settings.lease_seconds):
+                try:alive=self.store.heartbeat(item,self.engine.settings.lease_seconds)
+                except psycopg.Error:alive=False
+                if not alive:
                     current.cancel();return
         watch=asyncio.create_task(heartbeat())
+        from .model_budget import current_budget,ModelBudget
+        context=current_budget.set(ModelBudget(self.engine.settings,self.store,item))
         try:
             options=Options.model_validate(item['request']['options'])
             remaining=item['request']['max_download_bytes']-item['bytes']
@@ -41,7 +47,10 @@ class Worker:
             if item['kind']=='map':options.formats=['links'];options.render='never'
             seconds=max(.001,item['request']['max_seconds']-item['spent_ms']/1000)
             async with asyncio.timeout(seconds):
-                if urlsplit(item['url']).path.endswith('.xml'):
+                if item['kind']=='agent':
+                    from .agent import Agent
+                    result=await Agent(self.engine).run(item)
+                elif urlsplit(item['url']).path.endswith('.xml'):
                     if not await self.engine.network.allowed(item['url'],not options.respect_robots):raise ScrapeError('ROBOTS_DENIED','Sitemap excluded by robots.txt',403)
                     response=await self.engine.network.fetch(item['url'],max_bytes=options.max_bytes)
                     if b'<!DOCTYPE' in response.body.upper() or b'<!ENTITY' in response.body.upper():raise ScrapeError('UNSAFE_XML','XML external entities are forbidden')
@@ -61,26 +70,41 @@ class Worker:
             self.store.retry(item,0)
             raise
         except ScrapeError as e:
-            if e.retryable and item['attempts']<3:self.store.retry(item,getattr(e,'retry_after',min(60,2**item['attempts']+random.random())))
+            if e.code in ('PROVIDER_TOKEN_BUDGET','PROVIDER_COST_BUDGET','PROVIDER_LIMIT_VIOLATION'):
+                self.store.pause_for_budget(item,e.code)
+            elif e.retryable and item['attempts']<3:self.store.retry(item,getattr(e,'retry_after',min(60,2**item['attempts']+random.random())))
             else:self.store.finish(item,{'url':item['url'],'error':{'code':e.code,'message':e.message},'complete':False},error=True,elapsed_ms=round((time.monotonic()-start)*1000))
         except TimeoutError:
             self.store.finish(item,{'url':item['url'],'error':{'code':'TIME_BUDGET','message':'Execution budget exhausted'},'complete':False},error=True,elapsed_ms=round((time.monotonic()-start)*1000))
         except Exception:
             self.store.finish(item,{'url':item['url'],'error':{'code':'PROCESSING_FAILED','message':'Page processing failed; inspect server diagnostics'},'complete':False},error=True)
         finally:
+            current_budget.reset(context)
             watch.cancel();await asyncio.gather(watch,return_exceptions=True)
+    def completed(self,task):
+        self.tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logging.getLogger(__name__).error('Page task failed; its database lease will recover')
+
     async def run(self):
-        self.store.recover();last_cleanup=0
+        last_cleanup=0;failures=0
         try:
             while not self.stopping:
-                self.store.recover();self.store.settle()
-                await self.automation.tick();await self.automation.deliver()
-                if time.monotonic()-last_cleanup>3600:
-                    self.store.expire(self.engine.settings.retention_days);self.engine.artifacts.expire(self.engine.settings.retention_days);last_cleanup=time.monotonic()
-                while len(self.tasks)<self.engine.settings.workers:
-                    item=self.store.claim(self.engine.settings.lease_seconds)
-                    if not item:break
-                    task=asyncio.create_task(self.process(item));self.tasks.add(task);task.add_done_callback(self.tasks.discard)
+                try:
+                    self.store.recover();self.store.settle()
+                    await self.automation.tick();await self.automation.deliver()
+                    if time.monotonic()-last_cleanup>3600:
+                        self.store.expire(self.engine.settings.retention_days);self.engine.artifacts.expire(self.engine.settings.retention_days);last_cleanup=time.monotonic()
+                    while len(self.tasks)<self.engine.settings.workers:
+                        item=self.store.claim(self.engine.settings.lease_seconds)
+                        if not item:break
+                        task=asyncio.create_task(self.process(item));self.tasks.add(task);task.add_done_callback(self.completed)
+                    failures=0
+                except psycopg.Error:
+                    failures+=1
+                    logging.getLogger(__name__).warning("Worker database unavailable; retrying scheduler")
+                    await asyncio.sleep(min(15,2**min(failures,4)))
+                    continue
                 await asyncio.sleep(.15 if self.tasks else .5)
         finally:
             for task in list(self.tasks):task.cancel()

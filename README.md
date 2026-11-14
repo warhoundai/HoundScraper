@@ -2,6 +2,8 @@
 
 # HoundScraper
 
+Advanced preview for 0.2.0rc1. The stable v0.1.0 release remains available on GitHub Releases. Read the [advanced configuration and qualification notes](docs/advanced.md) before enabling optional integrations.
+
 ### Web data. Under your control.
 
 Clean content, persistent crawls, and inspectable sources for AI agents.
@@ -72,7 +74,7 @@ Configure your MCP client to run `houndscraper mcp` with HOUNDSCRAPER_ENDPOINT a
 
 ## What ships today?
 
-This is an initial **0.1.0** release, not a claim of complete Firecrawl parity. Core scraping, persistent jobs, clients and the dashboard are implemented. Optional browser rendering has a real Chromium fixture suite. AI/search require configured providers; document/OCR qualification, native Gemini/Vertex, media, S3 and autonomous agents remain staged work. The [capability matrix](docs/capabilities.md) and [roadmap](docs/roadmap.md) state the boundary explicitly.
+This is an advanced **0.2.0rc1 preview**, not a claim of complete Firecrawl parity. Core scraping, persistent jobs, clients and the dashboard are implemented. Chromium and PostgreSQL have real fixture suites; S3 has live AWS acceptance. Native model adapters, agent workflows and document/media processing are optional; their exact qualification status is reported separately. The [capability matrix](docs/capabilities.md) and [roadmap](docs/roadmap.md) state the boundary explicitly.
 
 The [Firecrawl v2 adapter](docs/compatibility.md) supports a documented subset and rejects unsupported options. No Firecrawl implementation or proprietary WarHound backend is included.
 

@@ -16,7 +16,7 @@ from .storage import Artifacts,Credentials
 
 class Engine:
     def __init__(self,settings,store,network=None):
-        self.settings=settings;self.store=store;self.network=network or Network(settings.workers)
+        self.settings=settings;self.store=store;self.network=network or Network(settings.workers,store=store)
         self.artifacts=Artifacts(store,settings.storage);self.credentials=Credentials(store,settings.encryption_key);self.providers=Providers(settings)
     async def scrape(self,tenant,url,options=None):
         options=options or Options();start=time.monotonic();url=normalize_url(url)
@@ -37,7 +37,7 @@ class Engine:
             raise e
         if response.status>=400:raise ScrapeError('UPSTREAM_HTTP_ERROR',f'Target returned HTTP {response.status}',502)
         mime=response.headers.get('content-type','application/octet-stream').split(';')[0]
-        body=response.body;acquisition='http';artifacts=[];browser_bytes=0
+        body=response.body;acquisition='http';artifacts=[];browser_bytes=0;caption_bytes=0
         if mime not in ('text/html','application/xhtml+xml'):
             if mime in ('text/plain','text/markdown','text/csv','application/json','application/xml','text/xml'):
                 text=body.decode('utf-8',errors='replace');output={f:text for f in options.formats if f in ('text','markdown','rawHtml')};internals={'links':[],'text':text,'metadata':{}};warnings=[]
@@ -56,8 +56,33 @@ class Engine:
                 acquisition='browser';response.url=snapshot['url']
                 if 'rawHtml' in options.formats:output['rawHtml']=body.decode('utf-8',errors='replace')
                 if 'screenshot' in options.formats:
-                    shot=base64.b64decode(snapshot['screenshot']);artifact=self.artifacts.put(tenant,shot,'image/png');artifacts.append(artifact);output['screenshot']=artifact
+                    shot=base64.b64decode(snapshot['screenshot']);artifact=await asyncio.to_thread(self.artifacts.put,tenant,shot,'image/png');artifacts.append(artifact);output['screenshot']=artifact
                 if 'branding' in options.formats:output['branding']=snapshot.get('branding',{})
+        if 'captions' in options.formats:
+            captions=[]
+            for track in output.get('captions',[])[:10]:
+                try:
+                    remaining=options.max_bytes-len(body)-browser_bytes-caption_bytes
+                    if remaining<=0:raise ScrapeError('BYTE_BUDGET','Caption download budget exhausted',413)
+                    cap=await self.network.fetch(track['url'],timeout=options.timeout_seconds,max_bytes=min(1048576,remaining),destination_check=lambda target:self.network.allowed(target,not options.respect_robots))
+                    caption_bytes+=len(cap.body)
+                    if cap.status>=400:raise ScrapeError('CAPTION_UNAVAILABLE','Caption resource could not be read',502)
+                    captions.append({**track,'text':cap.body.decode('utf-8',errors='replace'),'sha256':hashlib.sha256(cap.body).hexdigest()})
+                except ScrapeError as e:captions.append({**track,'error':e.code});warnings.append('A caption resource was unavailable')
+            output['captions']=captions
+        # Known profile secrets must not be sent to model prompts or agent context.
+        secrets=[]
+        for name,value in headers.items():
+            secrets.append(value)
+            if name.lower()=='authorization':secrets.append(value.split(' ',1)[-1])
+            if name.lower()=='cookie':secrets.extend(part.split('=',1)[-1].strip() for part in value.split(';') if '=' in part)
+        def redact_known(text):
+            for secret in sorted(set(secrets),key=len,reverse=True):
+                if secret:text=text.replace(secret,'[REDACTED]')
+            return text
+        for key in ('text','markdown'):
+            internals[key]=redact_known(internals.get(key,''))
+            if key in output:output[key]=redact_known(output[key])
         llm_usage={}
         if set(options.formats)&{'json','summary'}:
             schema=options.json_schema
@@ -66,7 +91,7 @@ class Engine:
             output['extraction']=extracted;llm_usage=extracted['usage']
             if 'json' in options.formats:output['json']=extracted['data']
             if 'summary' in options.formats:output['summary']=extracted['data'].get('summary') if isinstance(extracted['data'],dict) else None
-        result={'url':url,'final_url':response.url,'status':response.status,'content_type':mime,'fetched_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'acquisition':acquisition,'sha256':hashlib.sha256(body).hexdigest(),'content_sha256':hashlib.sha256(internals['text'].encode()).hexdigest(),'data':output,'metadata':internals['metadata'],'discovered_links':internals['links'],'warnings':warnings,'complete':not any(w.startswith('Discovery truncated') for w in warnings),'cache':{'hit':False},'artifacts':artifacts,'usage':{'download_bytes':len(body)+browser_bytes,'elapsed_ms':round((time.monotonic()-start)*1000),**llm_usage}}
+        result={'url':url,'final_url':response.url,'status':response.status,'content_type':mime,'fetched_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'acquisition':acquisition,'sha256':hashlib.sha256(body).hexdigest(),'content_sha256':hashlib.sha256(internals['text'].encode()).hexdigest(),'data':output,'metadata':internals['metadata'],'discovered_links':internals['links'],'warnings':warnings,'complete':not any(w.startswith('Discovery truncated') for w in warnings),'cache':{'hit':False},'artifacts':artifacts,'usage':{'download_bytes':len(body)+browser_bytes+caption_bytes,'elapsed_ms':round((time.monotonic()-start)*1000),**llm_usage}}
         if not internals['text'].strip():result['warnings'].append('No readable text was extracted');result['complete']=False
         if not options.credential_profile and not options.actions:self.store.cache_put(tenant,cachekey,result)
         return result
@@ -87,7 +112,7 @@ class Engine:
         endpoint=os.environ.get('HOUNDSCRAPER_PARSER_ENDPOINT')
         if not endpoint:raise ScrapeError('CAPABILITY_UNAVAILABLE','Enable the isolated document parser profile for this content type',503)
         async with httpx.AsyncClient(timeout=120,trust_env=False) as client:
-            r=await client.post(endpoint.rstrip('/')+'/parse',content=body,headers={'content-type':mime,'authorization':'Bearer '+os.environ.get('HOUNDSCRAPER_PARSER_KEY','')})
+            r=await client.post(endpoint.rstrip('/')+'/parse',content=body,headers={'content-type':mime,'authorization':'Bearer '+os.environ.get('HOUNDSCRAPER_PARSER_KEY',''),**({'X-Hound-Media-Language':options.media_language} if options.media_language else {})})
         if r.status_code>=400:raise ScrapeError('PARSER_FAILED','Document parsing failed',422)
-        data=r.json();artifact=self.artifacts.put(tenant,body,mime)
+        data=r.json();artifact=await asyncio.to_thread(self.artifacts.put,tenant,body,mime)
         return {'url':url,'final_url':url,'status':200,'content_type':mime,'acquisition':'document','sha256':hashlib.sha256(body).hexdigest(),'data':data,'metadata':{'pages':data.get('pages')},'discovered_links':[],'warnings':data.get('warnings',[]),'complete':data.get('complete',True),'cache':{'hit':False},'artifacts':[artifact],'usage':{'download_bytes':len(body)}}

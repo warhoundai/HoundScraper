@@ -2,7 +2,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .network import normalize_url
 
-FORMATS = {'markdown','text','html','rawHtml','renderedHtml','rawBase64','links','images','metadata','tables','jsonld','attributes','screenshot','json','summary','product','branding'}
+FORMATS = {'markdown','text','html','rawHtml','renderedHtml','rawBase64','links','images','metadata','tables','jsonld','attributes','screenshot','json','summary','product','branding','audio','video','captions'}
 class Options(BaseModel):
     model_config = ConfigDict(extra='forbid')
     formats: list[str] = Field(default_factory=lambda: ['markdown'], min_length=1, max_length=20)
@@ -21,6 +21,7 @@ class Options(BaseModel):
     prompt: str | None = Field(None, max_length=10000)
     actions: list[dict] = Field(default_factory=list, max_length=40)
     viewport: dict = Field(default_factory=lambda: {'width':1280,'height':900})
+    media_language: str | None = Field(None,pattern=r'^[a-z]{2,3}$')
     locale: str = 'en-US'
     timezone: str = 'UTC'
     wait_selector: str | None = Field(None, max_length=500)
@@ -86,6 +87,9 @@ class JobRequest(BaseModel):
     urls: list[str] = Field(default_factory=list, max_length=10000)
     options: Options = Field(default_factory=Options)
     max_pages: int = Field(1000, ge=1, le=1000000)
+    max_agent_steps: int = Field(40,ge=1,le=500)
+    max_provider_tokens: int = Field(200000,ge=1024,le=10000000)
+    max_cost_usd: float | None = Field(None,ge=0.000001,le=10000)
     max_depth: int = Field(10, ge=0, le=100)
     max_seconds: int = Field(900, ge=1, le=86400)
     max_download_bytes: int = Field(1073741824, ge=1024, le=107374182400)

@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 [project]
 name = "houndscraper"
-version = "0.1.0"
+version = "0.2.0rc1"
 description = "Local-first web content extraction and durable crawling for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,8 +12,9 @@ authors = [{name = "WarHound AI"}]
 dependencies = ["fastapi>=0.162,<1", "uvicorn>=0.54,<1", "aiohttp>=3.13,<4", "httpx>=0.28.1,<0.29", "psycopg[binary,pool]>=3.2,<4", "beautifulsoup4>=4.13,<5", "markdownify>=1.2,<2", "cryptography>=50,<51", "jsonschema>=4.25,<5", "croniter>=6,<7"]
 [project.optional-dependencies]
 browser = ["playwright==1.65.1"]
-parser = ["docling>=2,<3"]
+parser = ["docling[audio]>=2,<3"]
 s3 = ["boto3>=1.40,<2"]
+vertex = ["google-auth>=2,<3", "requests>=2.32,<3"]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "build>=1.2,<2", "pip-audit>=2.9,<3"]
 [project.scripts]
 houndscraper = "houndscraper.cli:main"

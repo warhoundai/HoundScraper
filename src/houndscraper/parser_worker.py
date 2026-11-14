@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from fastapi import FastAPI,Request
 from fastapi.responses import JSONResponse
-TYPES={'application/pdf':'.pdf','image/png':'.png','image/jpeg':'.jpg','image/tiff':'.tiff','application/vnd.openxmlformats-officedocument.wordprocessingml.document':'.docx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'.xlsx','application/vnd.openxmlformats-officedocument.presentationml.presentation':'.pptx','text/csv':'.csv','text/html':'.html','application/epub+zip':'.epub','application/vnd.oasis.opendocument.text':'.odt'}
+TYPES={'audio/wav':'.wav','audio/x-wav':'.wav','audio/mpeg':'.mp3','audio/flac':'.flac','audio/ogg':'.ogg','audio/mp4':'.m4a','video/mp4':'.mp4','application/pdf':'.pdf','image/png':'.png','image/jpeg':'.jpg','image/tiff':'.tiff','application/vnd.openxmlformats-officedocument.wordprocessingml.document':'.docx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'.xlsx','application/vnd.openxmlformats-officedocument.presentationml.presentation':'.pptx','text/csv':'.csv','text/html':'.html','application/epub+zip':'.epub','application/vnd.oasis.opendocument.text':'.odt'}
 def create_parser_app():
     key=os.environ.get('HOUNDSCRAPER_PARSER_KEY','')
     if len(key)<32:raise ValueError('Configure a separate parser service key')
@@ -32,7 +32,28 @@ def create_parser_app():
         async with capacity:
             with tempfile.TemporaryDirectory() as directory:
                 path=Path(directory)/('document'+TYPES[mime]);path.write_bytes(body)
-                process=await asyncio.create_subprocess_exec('python','-m','houndscraper.parser_process',str(path),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+                if mime.startswith(('audio/','video/')):
+                    probe=await asyncio.create_subprocess_exec('ffprobe','-v','error','-protocol_whitelist','file,pipe','-show_entries','format=duration','-of','json',str(path),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+                    try:output,_=await asyncio.wait_for(probe.communicate(),15)
+                    except BaseException:
+                        probe.kill();await probe.wait();raise
+                    import json
+                    try:duration=float(json.loads(output)['format']['duration'])
+                    except Exception:return JSONResponse({'error':'MEDIA_DURATION_UNKNOWN'},status_code=422)
+                    if not 0<duration<=300:return JSONResponse({'error':'MEDIA_DURATION_LIMIT','max_seconds':300},status_code=413)
+                    wav=Path(directory)/'bounded-audio.wav'
+                    convert=await asyncio.create_subprocess_exec('ffmpeg','-v','error','-protocol_whitelist','file,pipe','-i',str(path),'-t','300','-ac','1','-ar','16000',str(wav),stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
+                    try:await asyncio.wait_for(convert.wait(),30)
+                    except BaseException:
+                        convert.kill();await convert.wait();raise
+                    if convert.returncode:return JSONResponse({'error':'MEDIA_DECODE_FAILED'},status_code=422)
+                    path=wav
+                import re
+                language=request.headers.get('x-hound-media-language')
+                if language and not re.fullmatch('[a-z]{2,3}',language):return JSONResponse({'error':'INVALID_LANGUAGE'},status_code=422)
+                child_env={k:os.environ[k] for k in ('PATH','HOME','LANG','LC_ALL','TMPDIR','HF_HOME','HF_HUB_OFFLINE','DOCLING_ARTIFACTS_PATH','OMP_NUM_THREADS') if k in os.environ}
+                if language:child_env['HOUNDSCRAPER_MEDIA_LANGUAGE']=language
+                process=await asyncio.create_subprocess_exec('python','-m','houndscraper.parser_process',str(path),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,env=child_env)
                 parent=asyncio.current_task()
                 async def disconnected():
                     while True:
