@@ -109,3 +109,80 @@ async def test_profile_secrets_are_removed_before_model_extraction(store,setting
     engine.providers.extract=extraction
     await engine.scrape('alpha','https://fixture.example/',Options(formats=['json'],render='never',credential_profile='login'))
     assert 'synthetic-profile-secret' not in seen[0] and '[REDACTED]' in seen[0]
+
+@pytest.mark.asyncio
+async def test_parser_subprocess_never_receives_service_credentials(monkeypatch):
+    from houndscraper.parser_worker import create_parser_app
+    monkeypatch.setenv('HOUNDSCRAPER_PARSER_KEY','p'*40);monkeypatch.setenv('UNRELATED_SERVICE_SECRET','synthetic-hidden')
+    calls=[]
+    class Process:
+        returncode=0
+        async def communicate(self):return json.dumps({'markdown':'Fixture','complete':True}).encode(),b''
+    async def spawn(*args,**kwargs):calls.append(kwargs);return Process()
+    with patch('asyncio.create_subprocess_exec',spawn):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_parser_app()),base_url='https://parser.example') as c:
+            r=await c.post('/parse',content=b'%PDF-1.4 controlled fixture',headers={'Authorization':'Bearer '+'p'*40,'Content-Type':'application/pdf','X-Hound-Media-Language':'en'})
+    assert r.status_code==200
+    assert calls[0]['env']['HOUNDSCRAPER_MEDIA_LANGUAGE']=='en' and 'HOUNDSCRAPER_PARSER_KEY' not in calls[0]['env'] and 'UNRELATED_SERVICE_SECRET' not in calls[0]['env']
+
+def test_configured_costs_include_reasoning_and_cache_without_fabricating_rates(settings):
+    from houndscraper.pricing import measured_cost,reserve_cost
+    settings.provider_model='fixture';settings.pricing={'provider':'openai','model':'fixture','input_usd_per_million':1,'output_usd_per_million':2,'cached_input_usd_per_million':.1,'source':'https://pricing.example/verified','checked_at':'2026-11-14'}
+    assert measured_cost(settings,{'input_tokens':100,'output_tokens':50,'cached_input_tokens':20})==182000
+    assert reserve_cost(settings,100,50)==200000
+    settings.pricing={};assert measured_cost(settings,{'input_tokens':100,'output_tokens':50}) is None
+    with pytest.raises(ScrapeError):reserve_cost(settings,100,50)
+
+@pytest.mark.asyncio
+async def test_agent_dollar_reservation_prevents_model_call(store,settings):
+    from houndscraper.agent import Agent
+    settings.provider_model='fixture';settings.pricing={'provider':'openai','model':'fixture','input_usd_per_million':1,'output_usd_per_million':2,'source':'https://pricing.example/verified','checked_at':'2026-11-14'}
+    engine=Engine(settings,store,FixtureNetwork());called=False
+    async def complete(*args,**kwargs):
+        nonlocal called;called=True;return {},{}
+    engine.providers.complete=complete
+    job=store.create('alpha',JobRequest(kind='agent',query='Collect facts',max_cost_usd=.000001))
+    with pytest.raises(ScrapeError) as error:await Agent(engine).run(store.claim())
+    assert error.value.code=='PROVIDER_COST_BUDGET' and not called
+
+def test_execution_budget_reserves_atomically_across_parallel_pages_and_retries(store,settings):
+    from concurrent.futures import ThreadPoolExecutor
+    from houndscraper.model_budget import ModelBudget
+    job=store.create('alpha',JobRequest(kind='batch',urls=['https://fixture.example/1','https://fixture.example/2'],max_provider_tokens=12000))
+    items=[store.claim(),store.claim()];messages=[{'role':'user','content':'Controlled source'}]
+    def reserve(item):
+        try:return ModelBudget(settings,store,item).reserve(messages,2048)
+        except ScrapeError as error:return error.code
+    with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(reserve,items))
+    assert sum(r=='PROVIDER_TOKEN_BUDGET' for r in results)==1
+    index=next(i for i,r in enumerate(results) if r!='PROVIDER_TOKEN_BUDGET')
+    budget=ModelBudget(settings,store,items[index]);budget.settle(results[index],{'provider_tokens':{'input_tokens':100,'output_tokens':50}})
+    budget.settle(results[index],{'provider_tokens':{'input_tokens':0,'output_tokens':0}})
+    assert reserve(items[1-index])!='PROVIDER_TOKEN_BUDGET'
+    with store.pool.connection() as c:assert c.execute('SELECT tokens FROM hs_model_calls WHERE id=%s',(results[index],)).fetchone()['tokens']==150
+
+@pytest.mark.asyncio
+async def test_invalid_provider_json_still_settles_measured_usage(store,settings):
+    from houndscraper.model_budget import ModelBudget,current_budget
+    settings.provider_endpoint='https://model.fixture.example';settings.provider_model='fixture'
+    store.create('alpha',JobRequest(kind='extract',urls=['https://fixture.example/']))
+    context=current_budget.set(ModelBudget(settings,store,store.claim()))
+    async def post(*args,**kwargs):return httpx.Response(200,json={'choices':[{'message':{'content':'broken JSON'}}],'usage':{'prompt_tokens':100,'completion_tokens':20}})
+    try:
+        with patch.object(httpx.AsyncClient,'post',post):
+            with pytest.raises(ScrapeError) as error:await Providers(settings).complete([{'role':'user','content':'Fixture'}])
+        assert error.value.code=='PROVIDER_OUTPUT_INVALID'
+        with store.pool.connection() as c:
+            row=c.execute('SELECT tokens,settled FROM hs_model_calls').fetchone();assert row['settled'] and row['tokens']==120
+    finally:current_budget.reset(context)
+
+def test_lost_responses_hold_budget_and_provider_overrun_pauses_job(store,settings):
+    from houndscraper.model_budget import ModelBudget
+    job=store.create('alpha',JobRequest(kind='extract',urls=['https://fixture.example/'],max_provider_tokens=13000))
+    item=store.claim();budget=ModelBudget(settings,store,item);rid=budget.reserve([],2048)
+    # Unknown consumption is conservatively retained across restarts, never refunded.
+    budget.settle(rid,{})
+    with store.pool.connection() as c:assert c.execute('SELECT tokens FROM hs_model_calls WHERE id=%s',(rid,)).fetchone()['tokens']==6146
+    second=budget.reserve([],2048)
+    with pytest.raises(ScrapeError):budget.settle(second,{'provider_tokens':{'input_tokens':10000,'output_tokens':10000}})
+    with store.pool.connection() as c:assert c.execute('SELECT status FROM hs_jobs WHERE id=%s',(job['id'],)).fetchone()['status']=='paused'

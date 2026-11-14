@@ -21,6 +21,7 @@ class Options(BaseModel):
     prompt: str | None = Field(None, max_length=10000)
     actions: list[dict] = Field(default_factory=list, max_length=40)
     viewport: dict = Field(default_factory=lambda: {'width':1280,'height':900})
+    media_language: str | None = Field(None,pattern=r'^[a-z]{2,3}$')
     locale: str = 'en-US'
     timezone: str = 'UTC'
     wait_selector: str | None = Field(None, max_length=500)
@@ -88,6 +89,7 @@ class JobRequest(BaseModel):
     max_pages: int = Field(1000, ge=1, le=1000000)
     max_agent_steps: int = Field(40,ge=1,le=500)
     max_provider_tokens: int = Field(200000,ge=1024,le=10000000)
+    max_cost_usd: float | None = Field(None,ge=0.000001,le=10000)
     max_depth: int = Field(10, ge=0, le=100)
     max_seconds: int = Field(900, ge=1, le=86400)
     max_download_bytes: int = Field(1073741824, ge=1024, le=107374182400)

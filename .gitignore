@@ -10,3 +10,5 @@ node_modules/
 verification/
 
 node_modules
+
+gha-creds-*.json

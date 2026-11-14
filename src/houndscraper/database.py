@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS hs_network_slots (slot integer PRIMARY KEY, owner tex
 INSERT INTO hs_network_slots(slot) SELECT generate_series(1,64) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS hs_origin_slots (origin text PRIMARY KEY, owner text, lease_until double precision NOT NULL DEFAULT 0, retry_at double precision NOT NULL DEFAULT 0, last_start double precision NOT NULL DEFAULT 0, delay double precision NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS hs_notification_profiles (tenant text NOT NULL,name text NOT NULL,ciphertext text NOT NULL,PRIMARY KEY(tenant,name));
+CREATE TABLE IF NOT EXISTS hs_model_calls (
+ id text PRIMARY KEY, job text NOT NULL REFERENCES hs_jobs(id) ON DELETE CASCADE,
+ tokens bigint NOT NULL, cost_nano bigint NOT NULL, settled boolean NOT NULL DEFAULT false,
+ usage jsonb, created double precision NOT NULL);
+CREATE INDEX IF NOT EXISTS hs_model_calls_job ON hs_model_calls(job);
 CREATE TABLE IF NOT EXISTS hs_agent_state (job text PRIMARY KEY REFERENCES hs_jobs(id) ON DELETE CASCADE, state jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS hs_cache (
  tenant text NOT NULL, key text NOT NULL, value jsonb NOT NULL,

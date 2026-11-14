@@ -3,8 +3,8 @@ import os,subprocess,json,sys
 from pathlib import Path
 import pytest
 pytestmark=pytest.mark.skipif(os.environ.get('HOUNDSCRAPER_TEST_PARSER')!='1',reason='Requires separately provisioned offline parser models')
-def convert(path):
-    r=subprocess.run([sys.executable,'-m','houndscraper.parser_process',str(path)],capture_output=True,text=True,timeout=120)
+def convert(path,language=None):
+    r=subprocess.run([sys.executable,'-m','houndscraper.parser_process',str(path)],capture_output=True,text=True,timeout=120,env={**os.environ,**({'HOUNDSCRAPER_MEDIA_LANGUAGE':language} if language else {})})
     assert r.returncode==0,r.stderr[-2000:]
     return json.loads(r.stdout)
 def test_real_office_document(tmp_path):
@@ -24,5 +24,5 @@ def test_real_scanned_pdf_ocr(tmp_path):
 def test_real_audio_transcription(tmp_path):
     path=tmp_path/'speech.wav'
     subprocess.run(['espeak-ng','-w',str(path),'The invoice total is forty two dollars.'],check=True)
-    result=convert(path);text=result['markdown'].lower()
+    result=convert(path,language='en');text=result['markdown'].lower()
     assert 'invoice' in text and ('dollar' in text or '42' in text)

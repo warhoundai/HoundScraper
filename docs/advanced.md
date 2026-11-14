@@ -31,3 +31,15 @@ Audio/video is bounded to 32 MiB and 300 seconds. ffprobe verifies duration; ffm
 ## Shared scheduling and migrations
 
 PostgreSQL now enforces a global HTTP slot pool and one active request per origin across worker processes. Origin crawl delay and Retry-After are shared. Expired leases recover and stale releases cannot clear a newer owner's lease. Use identical concurrency configuration across a cluster. Browser pools remain separately bounded per isolated worker deployment. Startup DDL is serialized with a database advisory transaction lock; migrations are additive. Stop old worker versions before upgrading an initial 0.x installation and back up database/artifacts first.
+
+## Keyless Vertex qualification setup
+
+Where the connector cannot create service accounts, run `python scripts/configure-vertex-identity.py --project=YOUR_PROJECT` using your own authenticated gcloud CLI. The script creates no keys, binds only endpoint prediction and service usage, restricts GitHub federation to the exact repository and owner IDs and trusted branches, and refuses to reuse unexpectedly broader roles/providers. Save its printed identifiers as GitHub Actions variables with the same names, then run the Vertex qualification workflow on the advanced branch. These identifiers are not credentials. A skipped workflow is not a successful live model test.
+
+The parser model profile has real PDF/layout, scanned OCR and Office fixtures. Audio language may be set with options.media_language (or media_language query for uploads); it is not silently forced to English. Parser stdout is a JSON-only protocol; backend diagnostics do not enter transcript data.
+
+## Measured usage and execution budgets
+
+Every worker model call, including extraction across parallel pages, retries and agent synthesis, reserves tokens atomically in PostgreSQL before contacting the provider. Lost responses retain their conservative reservation. Valid usage counters replace estimates; invalid JSON still records returned usage. Reasoning tokens are included in Gemini output usage and OpenAI completion usage. A provider overrun pauses the job. Resume retains prior usage rather than resetting spending.
+
+Optional max_cost_usd requires HOUNDSCRAPER_PRICING_JSON with provider, model, input_usd_per_million, output_usd_per_million, optional cached_input_usd_per_million, source (HTTPS) and checked_at. Rates must cover the configured model's entire enabled context range; use the highest applicable rate if pricing is tiered. Costs are calculated from configured rates, not a claim about the provider's invoice or promotional credits. No guessed default prices are shipped. Dollar budgets cover model tokens, not separately billed search/proxy/storage services. Synchronous scrape has one output-bounded model call; use a job for a cumulative token or dollar budget.

@@ -29,6 +29,7 @@ class ResumeRequest(BaseModel):
     max_pages:int|None=Field(None,ge=1,le=1000000)
     max_agent_steps:int|None=Field(None,ge=1,le=500)
     max_provider_tokens:int|None=Field(None,ge=1024,le=10000000)
+    max_cost_usd:float|None=Field(None,ge=0.000001,le=10000)
     max_seconds:int|None=Field(None,ge=1,le=86400)
     max_download_bytes:int|None=Field(None,ge=1024,le=107374182400)
 
@@ -52,7 +53,7 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
                     body=bytearray()
                     async for chunk in request.stream():
                         body.extend(chunk)
-                        if len(body)>(33554432 if request.url.path=='/v1/parse/upload' else 262144):raise ScrapeError('BODY_TOO_LARGE','JSON requests are limited to 256 KiB',413)
+                        if len(body)>(33554432 if request.url.path=='/v1/parse/upload' else 262144):raise ScrapeError('BODY_TOO_LARGE','Request body exceeds the configured size limit',413)
                     request._body=bytes(body)
             response=await call_next(request)
             response.headers.update({'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"})
@@ -117,6 +118,9 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
         if value.kind=='search':
             found=await eng.providers.search(value.query,limit=min(value.max_pages,100));value.urls=[v['url'] for v in found['results']]
         if not value.urls and value.kind!='agent':raise ScrapeError('INVALID_REQUEST','At least one seed URL is required')
+        if value.max_cost_usd is not None:
+            from .pricing import rates
+            if not rates(cfg):raise ScrapeError('PRICING_UNAVAILABLE','A dollar budget requires model pricing configuration',503)
         if value.kind=='agent' and not cfg.provider_model:raise ScrapeError('CAPABILITY_UNAVAILABLE','Agent workflows need a configured model',503)
         if not value.options.respect_robots and not cfg.allow_robots_override:raise ScrapeError('POLICY_BLOCKED','Robots override requires operator configuration',403)
         row=db.create(request.state.tenant,value,request.headers.get('idempotency-key'))
@@ -131,11 +135,11 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
             return handler
         app.add_api_route('/v1/'+kind,endpoint(kind),methods=['POST'],status_code=202,name=kind)
     @app.post('/v1/parse/upload')
-    async def parse_upload(request:Request):
+    async def parse_upload(request:Request,media_language:str|None=Query(None,pattern='^[a-z]{2,3}$')):
         import uuid
         body=await request.body()
         if not body:raise ScrapeError('INVALID_DOCUMENT','Upload a nonempty document')
-        return await eng.parse_document(request.state.tenant,body,request.headers.get('content-type','application/octet-stream').split(';')[0],'urn:houndscraper:upload:'+uuid.uuid4().hex,Options())
+        return await eng.parse_document(request.state.tenant,body,request.headers.get('content-type','application/octet-stream').split(';')[0],'urn:houndscraper:upload:'+uuid.uuid4().hex,Options(media_language=media_language))
     @app.post('/v1/parse')
     async def parse_url(value:ScrapeRequest,request:Request):
         return await eng.scrape(request.state.tenant,value.url,value.options)

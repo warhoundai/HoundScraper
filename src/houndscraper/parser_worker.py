@@ -48,7 +48,12 @@ def create_parser_app():
                         convert.kill();await convert.wait();raise
                     if convert.returncode:return JSONResponse({'error':'MEDIA_DECODE_FAILED'},status_code=422)
                     path=wav
-                process=await asyncio.create_subprocess_exec('python','-m','houndscraper.parser_process',str(path),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+                import re
+                language=request.headers.get('x-hound-media-language')
+                if language and not re.fullmatch('[a-z]{2,3}',language):return JSONResponse({'error':'INVALID_LANGUAGE'},status_code=422)
+                child_env={k:os.environ[k] for k in ('PATH','HOME','LANG','LC_ALL','TMPDIR','HF_HOME','HF_HUB_OFFLINE','DOCLING_ARTIFACTS_PATH','OMP_NUM_THREADS') if k in os.environ}
+                if language:child_env['HOUNDSCRAPER_MEDIA_LANGUAGE']=language
+                process=await asyncio.create_subprocess_exec('python','-m','houndscraper.parser_process',str(path),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,env=child_env)
                 parent=asyncio.current_task()
                 async def disconnected():
                     while True:

@@ -34,6 +34,8 @@ class Worker:
                 if not self.store.heartbeat(item,self.engine.settings.lease_seconds):
                     current.cancel();return
         watch=asyncio.create_task(heartbeat())
+        from .model_budget import current_budget,ModelBudget
+        context=current_budget.set(ModelBudget(self.engine.settings,self.store,item))
         try:
             options=Options.model_validate(item['request']['options'])
             remaining=item['request']['max_download_bytes']-item['bytes']
@@ -71,6 +73,7 @@ class Worker:
         except Exception:
             self.store.finish(item,{'url':item['url'],'error':{'code':'PROCESSING_FAILED','message':'Page processing failed; inspect server diagnostics'},'complete':False},error=True)
         finally:
+            current_budget.reset(context)
             watch.cancel();await asyncio.gather(watch,return_exceptions=True)
     async def run(self):
         self.store.recover();last_cleanup=0

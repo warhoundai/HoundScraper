@@ -112,7 +112,7 @@ class Engine:
         endpoint=os.environ.get('HOUNDSCRAPER_PARSER_ENDPOINT')
         if not endpoint:raise ScrapeError('CAPABILITY_UNAVAILABLE','Enable the isolated document parser profile for this content type',503)
         async with httpx.AsyncClient(timeout=120,trust_env=False) as client:
-            r=await client.post(endpoint.rstrip('/')+'/parse',content=body,headers={'content-type':mime,'authorization':'Bearer '+os.environ.get('HOUNDSCRAPER_PARSER_KEY','')})
+            r=await client.post(endpoint.rstrip('/')+'/parse',content=body,headers={'content-type':mime,'authorization':'Bearer '+os.environ.get('HOUNDSCRAPER_PARSER_KEY',''),**({'X-Hound-Media-Language':options.media_language} if options.media_language else {})})
         if r.status_code>=400:raise ScrapeError('PARSER_FAILED','Document parsing failed',422)
         data=r.json();artifact=await asyncio.to_thread(self.artifacts.put,tenant,body,mime)
         return {'url':url,'final_url':url,'status':200,'content_type':mime,'acquisition':'document','sha256':hashlib.sha256(body).hexdigest(),'data':data,'metadata':{'pages':data.get('pages')},'discovered_links':[],'warnings':data.get('warnings',[]),'complete':data.get('complete',True),'cache':{'hit':False},'artifacts':[artifact],'usage':{'download_bytes':len(body)}}

@@ -17,6 +17,7 @@ class Settings:
     allow_robots_override: bool = field(default_factory=lambda:os.environ.get('HOUNDSCRAPER_ALLOW_ROBOTS_OVERRIDE','false')=='true')
     browser_endpoint: str = field(default_factory=lambda: os.environ.get('HOUNDBROWSER_ENDPOINT', ''))
     browser_key: str = field(default_factory=lambda: os.environ.get('HOUNDBROWSER_SERVICE_KEY', ''))
+    pricing: dict = field(default_factory=lambda:json.loads(os.environ.get('HOUNDSCRAPER_PRICING_JSON','{}')))
     provider_kind: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_LLM_PROVIDER','openai'))
     provider_endpoint: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_LLM_ENDPOINT', ''))
     provider_key: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_LLM_KEY', ''))

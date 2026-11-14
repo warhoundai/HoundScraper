@@ -7,6 +7,17 @@ from .errors import ScrapeError
 class Providers:
     def __init__(self,settings):self.settings=settings
     async def complete(self,messages,max_output_tokens=2048):
+        from .model_budget import current_budget
+        budget=current_budget.get();reservation=budget.reserve(messages,max_output_tokens) if budget else None
+        try:
+            value,usage=await self._complete(messages,max_output_tokens)
+        except ScrapeError as error:
+            if budget and getattr(error,'usage',None):budget.settle(reservation,error.usage)
+            raise
+        if budget:budget.settle(reservation,usage)
+        return value,usage
+
+    async def _complete(self,messages,max_output_tokens=2048):
         """Bounded structured completion; no silent provider/model substitution."""
         cfg=self.settings
         if not cfg.provider_model:raise ScrapeError('CAPABILITY_UNAVAILABLE','Configure a model name',503)
@@ -47,14 +58,20 @@ class Providers:
         try:
             raw=r.json()
             if kind=='openai':
-                data=json.loads(raw['choices'][0]['message']['content']);usage=raw.get('usage',{})
-                counters={'input_tokens':usage.get('prompt_tokens'),'output_tokens':usage.get('completion_tokens'),'reasoning_tokens':usage.get('completion_tokens_details',{}).get('reasoning_tokens'),'raw':usage}
+                text=raw['choices'][0]['message']['content'];usage=raw.get('usage',{})
+                counters={'input_tokens':usage.get('prompt_tokens'),'output_tokens':usage.get('completion_tokens'),'reasoning_tokens':usage.get('completion_tokens_details',{}).get('reasoning_tokens'),'cached_input_tokens':usage.get('prompt_tokens_details',{}).get('cached_tokens',0),'raw':usage}
             else:
                 text=''.join(p.get('text','') for p in raw['candidates'][0]['content']['parts'] if not p.get('thought'))
-                data=json.loads(text);usage=raw.get('usageMetadata',{});output=usage.get('candidatesTokenCount');thinking=usage.get('thoughtsTokenCount',0)
-                counters={'input_tokens':usage.get('promptTokenCount'),'output_tokens':output+thinking if output is not None else None,'reasoning_tokens':thinking,'raw':usage}
+                usage=raw.get('usageMetadata',{});output=usage.get('candidatesTokenCount');thinking=usage.get('thoughtsTokenCount',0)
+                counters={'input_tokens':usage.get('promptTokenCount',0)+usage.get('toolUsePromptTokenCount',0),'output_tokens':output+thinking if output is not None else None,'reasoning_tokens':thinking,'cached_input_tokens':usage.get('cachedContentTokenCount',0),'raw':usage}
         except Exception as e:raise ScrapeError('PROVIDER_OUTPUT_INVALID','Provider returned no valid structured completion',422) from e
-        return data,{'provider':kind,'model':raw.get('modelVersion') or raw.get('model') or cfg.provider_model,'provider_tokens':counters,'cost_usd':None,'cost_status':'pricing_not_configured'}
+        from .pricing import measured_cost
+        cost=measured_cost(cfg,counters)
+        report={'provider':kind,'model':raw.get('modelVersion') or raw.get('model') or cfg.provider_model,'provider_tokens':counters,'cost_usd':cost/1000000000 if cost is not None else None,'cost_nano_usd':cost,'cost_status':'calculated_from_configured_rates' if cost is not None else 'pricing_or_usage_unknown','pricing':cfg.pricing if cost is not None else None}
+        try:data=json.loads(text)
+        except (ValueError,TypeError) as cause:
+            error=ScrapeError('PROVIDER_OUTPUT_INVALID','Provider returned no valid structured completion',422);error.usage=report;raise error from cause
+        return data,report
 
     async def extract_many(self,sources,schema=None,prompt=None):
         if schema:Draft202012Validator.check_schema(schema)
