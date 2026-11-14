@@ -22,7 +22,19 @@ def test_real_scanned_pdf_ocr(tmp_path):
     path=tmp_path/'scan.pdf';image.save(path,'PDF');result=convert(path);assert '42' in result['markdown']
 
 def test_real_audio_transcription(tmp_path):
-    path=tmp_path/'speech.wav'
-    subprocess.run(['espeak-ng','-w',str(path),'The invoice total is forty two dollars.'],check=True)
-    result=convert(path,language='en');text=result['markdown'].lower()
-    assert 'invoice' in text and ('dollar' in text or '42' in text)
+    # Public-domain JFK inaugural excerpt, as used by upstream Whisper's MIT test suite.
+    # Download only during explicit qualification, not in offline parser runtime.
+    import urllib.request,hashlib,re
+    url='https://raw.githubusercontent.com/openai/whisper/86098128c0b4f24f0e2aa2994de830614b474227/tests/jfk.flac'
+    with urllib.request.urlopen(url,timeout=30) as response:body=response.read(2000000)
+    assert hashlib.sha256(body).hexdigest()=='63a4b1e4c1dc655ac70961ffbf518acd249df237e5a0152faae9a4a836949715'
+    path=tmp_path/'speech.flac';path.write_bytes(body)
+    result=convert(path,language='en');actual=re.findall(r"[a-z]+",result['markdown'].lower())
+    expected='and so my fellow americans ask not what your country can do for you ask what you can do for your country'.split()
+    row=list(range(len(actual)+1))
+    for i,word in enumerate(expected,1):
+        next_row=[i]
+        for j,seen in enumerate(actual,1):next_row.append(min(next_row[-1]+1,row[j]+1,row[j-1]+(word!=seen)))
+        row=next_row
+    wer=row[-1]/len(expected)
+    assert wer<=.2,{'word_error_rate':wer,'transcript':result['markdown']}

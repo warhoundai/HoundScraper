@@ -122,6 +122,16 @@ class Store:
             c.execute('UPDATE hs_jobs SET processed=processed+1,inflight=GREATEST(0,inflight-1),reserved_bytes=GREATEST(0,reserved_bytes-%s),errors=errors+%s,bytes=bytes+%s,spent_ms=spent_ms+%s,updated=%s WHERE id=%s',(item['allowed_bytes'],int(error),result.get('usage',{}).get('budget_download_bytes',result.get('usage',{}).get('download_bytes',0)),elapsed_ms,time.time(),item['job']))
             self.event(c,item['job'],'page_failed' if error else 'page_completed',{'url':item['url'],'error':result.get('error')})
             return True
+    def pause_for_budget(self,item,reason):
+        with self.pool.connection() as c:
+            job=c.execute('SELECT status FROM hs_jobs WHERE id=%s FOR UPDATE',(item['job'],)).fetchone()
+            row=c.execute("UPDATE hs_frontier SET state='queued',lease=NULL,lease_until=NULL WHERE job=%s AND url=%s AND lease=%s AND state='leased' RETURNING job",(item['job'],item['url'],item['lease'])).fetchone()
+            if not row:return
+            c.execute('UPDATE hs_jobs SET inflight=GREATEST(0,inflight-1),reserved_bytes=GREATEST(0,reserved_bytes-%s) WHERE id=%s',(item['allowed_bytes'],item['job']))
+            if job['status']!='cancelled':
+                c.execute("UPDATE hs_jobs SET status='paused',reason=%s,updated=%s WHERE id=%s",(reason,time.time(),item['job']))
+                self.event(c,item['job'],'paused',{'reason':reason})
+
     def retry(self,item,delay):
         with self.pool.connection() as c:
             row=c.execute("UPDATE hs_frontier SET state='queued',lease=NULL,lease_until=NULL,retry_at=%s WHERE job=%s AND url=%s AND lease=%s AND state='leased' RETURNING job",(time.time()+delay,item['job'],item['url'],item['lease'])).fetchone()

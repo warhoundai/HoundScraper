@@ -186,3 +186,25 @@ def test_lost_responses_hold_budget_and_provider_overrun_pauses_job(store,settin
     second=budget.reserve([],2048)
     with pytest.raises(ScrapeError):budget.settle(second,{'provider_tokens':{'input_tokens':10000,'output_tokens':10000}})
     with store.pool.connection() as c:assert c.execute('SELECT status FROM hs_jobs WHERE id=%s',(job['id'],)).fetchone()['status']=='paused'
+
+@pytest.mark.asyncio
+async def test_worker_scheduler_recovers_after_database_outage(store,settings):
+    import psycopg
+    from unittest.mock import AsyncMock
+    worker=Worker(Engine(settings,store,FixtureNetwork()));worker.automation.tick=AsyncMock();worker.automation.deliver=AsyncMock();real=store.recover;calls=0
+    def recover():
+        nonlocal calls;calls+=1
+        if calls==1:raise psycopg.OperationalError('Controlled outage')
+        worker.stopping=True;return real()
+    with patch.object(store,'recover',recover),patch('houndscraper.worker.asyncio.sleep',AsyncMock()):await worker.run()
+    assert calls==2 and worker.automation.tick.called
+
+@pytest.mark.asyncio
+async def test_model_exhaustion_pauses_frontier_and_resumes_with_retained_spending(store,settings):
+    job=store.create('alpha',JobRequest(kind='extract',urls=['https://fixture.example/'],max_provider_tokens=1024))
+    engine=Engine(settings,store,FixtureNetwork())
+    async def scrape(*args):raise ScrapeError('PROVIDER_TOKEN_BUDGET','Controlled exhausted budget',402)
+    engine.scrape=scrape;await Worker(engine).process(store.claim())
+    assert store.get('alpha',job['id'])['status']=='paused' and not store.results('alpha',job['id'])
+    resumed=store.transition('alpha',job['id'],'resume',{'max_provider_tokens':20000})
+    assert resumed['status']=='queued' and store.claim()['url']=='https://fixture.example/'
