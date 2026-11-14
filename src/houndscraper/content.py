@@ -21,6 +21,17 @@ def extract(body,url,options,rendered=False):
                 if target not in seen:
                     seen.add(target);output.append({'url':target,'text':el.get_text(' ',strip=True) if tag=='a' else el.get('alt','')})
             except Exception:continue
+    media={'audio':[],'video':[],'captions':[]}
+    for kind in ('audio','video'):
+        for element in soup.find_all(kind,limit=100):
+            for node in [element,*element.find_all('source')]:
+                if not node.get('src'):continue
+                try:media[kind].append({'url':normalize_url(node['src'],url),'content_type':node.get('type')})
+                except Exception:pass
+            for node in element.find_all('track',limit=20):
+                if node.get('kind') not in ('captions','subtitles') or not node.get('src'):continue
+                try:media['captions'].append({'url':normalize_url(node['src'],url),'language':node.get('srclang'),'label':node.get('label')})
+                except Exception:pass
     ld=[]
     for el in soup.select('script[type="application/ld+json"]'):
         try:ld.append(json.loads(el.get_text()))
@@ -51,6 +62,7 @@ def extract(body,url,options,rendered=False):
     tables=[[[cell.get_text(' ',strip=True) for cell in row.find_all(['th','td'])] for row in table.find_all('tr')] for table in root.find_all('table')]
     product=next((v for item in ld for v in (item if isinstance(item,list) else [item]) if isinstance(v,dict) and 'Product' in str(v.get('@type',''))),None)
     candidates={'markdown':md,'text':text,'html':html,'rawHtml':body.decode('utf-8',errors='replace') if isinstance(body,bytes) else body,'renderedHtml':(body.decode('utf-8',errors='replace') if isinstance(body,bytes) else body) if rendered else None,'rawBase64':base64.b64encode(body if isinstance(body,bytes) else body.encode()).decode(),'links':links,'images':images,'metadata':metadata,'tables':tables,'jsonld':ld,'attributes':attrs,'product':product}
+    candidates.update(media)
     outputs={k:v for k,v in candidates.items() if k in options.formats}
     warnings=['Discovery truncated at 1,000 links/images per page'] if discovery_truncated else []
     if 'product' in options.formats and product is None:warnings.append('No Product structured data found; no product facts were invented')

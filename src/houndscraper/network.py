@@ -52,8 +52,8 @@ class Response:
     elapsed:float
 
 class Network:
-    def __init__(self, concurrency=8, resolver=None):
-        self.global_limit=asyncio.Semaphore(concurrency)
+    def __init__(self, concurrency=8, resolver=None, store=None):
+        self.global_limit=asyncio.Semaphore(concurrency);self.store=store;self.maximum=concurrency
         self.hosts={}
         self.resolver=resolver or PublicResolver()
         self.robots={}
@@ -68,6 +68,13 @@ class Network:
                 async with self.global_limit,host:
                     remaining=timeout-(time.monotonic()-start)
                     if remaining<=0:raise ScrapeError('TIMEOUT','Request timed out',408,True)
+                    lease=None;retry_after=0
+                    if self.store:
+                        while lease is None:
+                            remaining=timeout-(time.monotonic()-start)
+                            if remaining<=0:raise ScrapeError('SCHEDULER_TIMEOUT','Origin pacing or global capacity exhausted the request deadline',408,True)
+                            lease=self.store.acquire_network(origin(url),self.maximum,remaining+15)
+                            if lease is None:await asyncio.sleep(.1)
                     try:
                         async with session.request(method,url,headers=request_headers,data=body,allow_redirects=False,timeout=aiohttp.ClientTimeout(total=remaining)) as r:
                             if r.status in (301,302,303,307,308):
@@ -75,6 +82,12 @@ class Network:
                                 next_url=normalize_url(r.headers.get('Location',''),url)
                                 if origin(next_url)!=original_origin:request_headers={k:v for k,v in request_headers.items() if k.lower() not in ('authorization','cookie','proxy-authorization')}
                                 url=next_url;continue
+                            if r.status in (429,503):
+                                try:retry_after=max(1,min(86400,int(r.headers.get('Retry-After','5'))))
+                                except ValueError:
+                                    from email.utils import parsedate_to_datetime
+                                    try:retry_after=max(1,min(86400,parsedate_to_datetime(r.headers['Retry-After']).timestamp()-time.time()))
+                                    except Exception:retry_after=5
                             chunks=[];count=0
                             async for chunk in r.content.iter_chunked(65536):
                                 count+=len(chunk)
@@ -83,6 +96,8 @@ class Network:
                             return Response(str(r.url),r.status,{k.lower():v for k,v in r.headers.items()},b''.join(chunks),time.monotonic()-start)
                     except (aiohttp.ClientError,asyncio.TimeoutError) as e:
                         raise ScrapeError('FETCH_FAILED','Network request failed or timed out',502,True) from e
+                    finally:
+                        if lease:self.store.release_network(lease,retry_after)
         raise ScrapeError('REDIRECT_BLOCKED','Too many redirects',403)
     async def allowed(self,url,override=False):
         if override:return True
@@ -94,6 +109,7 @@ class Network:
             elif response.status>=400:raise ScrapeError('ROBOTS_UNAVAILABLE','robots.txt could not be checked',503,True)
             else:lines=response.body.decode('utf-8',errors='replace').splitlines()
             parser=RobotFileParser();parser.parse(lines);cached=(time.monotonic()+300,parser);self.robots[key]=cached
+        if self.store:self.store.origin_delay(key,cached[1].crawl_delay('HoundScraper') or cached[1].crawl_delay('*') or 0)
         return cached[1].can_fetch('HoundScraper',url)
 
 def response_hash(body):return hashlib.sha256(body).hexdigest()

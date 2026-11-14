@@ -1,0 +1,32 @@
+name: Parser qualification
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feature/advanced-extraction']
+permissions:
+  contents: read
+jobs:
+  offline-documents:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with: {python-version: '3.12'}
+      - name: Install CPU runtime and parser
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install '.[parser,dev]' reportlab
+      - name: Provision models explicitly
+        run: |
+          docling-tools models download --output-dir "$RUNNER_TEMP/docling-models"
+          docling-tools models download whisper_tiny --output-dir "$RUNNER_TEMP/docling-models"
+      - name: Verify PDF, scanned OCR and Office without model downloads
+        env:
+          HOUNDSCRAPER_TEST_PARSER: '1'
+          HF_HUB_OFFLINE: '1'
+          DOCLING_ARTIFACTS_PATH: ${{ runner.temp }}/docling-models
+        run: pytest -q tests/test_parser_profile.py

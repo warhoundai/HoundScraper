@@ -2,6 +2,8 @@
 
 # HoundScraper
 
+Development branch: advanced features are being qualified for 0.2. The stable v0.1.0 release remains available on main and GitHub Releases.
+
 ### Web data. Under your control.
 
 Clean content, persistent crawls, and inspectable sources for AI agents.

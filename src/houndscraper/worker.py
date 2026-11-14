@@ -41,7 +41,10 @@ class Worker:
             if item['kind']=='map':options.formats=['links'];options.render='never'
             seconds=max(.001,item['request']['max_seconds']-item['spent_ms']/1000)
             async with asyncio.timeout(seconds):
-                if urlsplit(item['url']).path.endswith('.xml'):
+                if item['kind']=='agent':
+                    from .agent import Agent
+                    result=await Agent(self.engine).run(item)
+                elif urlsplit(item['url']).path.endswith('.xml'):
                     if not await self.engine.network.allowed(item['url'],not options.respect_robots):raise ScrapeError('ROBOTS_DENIED','Sitemap excluded by robots.txt',403)
                     response=await self.engine.network.fetch(item['url'],max_bytes=options.max_bytes)
                     if b'<!DOCTYPE' in response.body.upper() or b'<!ENTITY' in response.body.upper():raise ScrapeError('UNSAFE_XML','XML external entities are forbidden')

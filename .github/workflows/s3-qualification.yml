@@ -1,0 +1,30 @@
+name: S3 qualification
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feature/advanced-extraction']
+permissions:
+  contents: read
+jobs:
+  real-s3:
+    if: vars.HOUNDSCRAPER_TEST_ROLE != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with: {python-version: '3.12'}
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.HOUNDSCRAPER_TEST_ROLE }}
+          role-duration-seconds: 900
+          aws-region: us-east-1
+          mask-aws-account-id: true
+      - run: pip install -r requirements.lock && pip install '.[s3]'
+      - name: Verify real storage and permission boundary
+        env:
+          HOUNDSCRAPER_TEST_BUCKET: ${{ vars.HOUNDSCRAPER_TEST_BUCKET }}
+        run: python scripts/verify-s3.py

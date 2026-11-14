@@ -27,6 +27,8 @@ class SearchRequest(BaseModel):
 class ResumeRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
     max_pages:int|None=Field(None,ge=1,le=1000000)
+    max_agent_steps:int|None=Field(None,ge=1,le=500)
+    max_provider_tokens:int|None=Field(None,ge=1024,le=10000000)
     max_seconds:int|None=Field(None,ge=1,le=86400)
     max_download_bytes:int|None=Field(None,ge=1024,le=107374182400)
 
@@ -50,7 +52,7 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
                     body=bytearray()
                     async for chunk in request.stream():
                         body.extend(chunk)
-                        if len(body)>262144:raise ScrapeError('BODY_TOO_LARGE','JSON requests are limited to 256 KiB',413)
+                        if len(body)>(33554432 if request.url.path=='/v1/parse/upload' else 262144):raise ScrapeError('BODY_TOO_LARGE','JSON requests are limited to 256 KiB',413)
                     request._body=bytes(body)
             response=await call_next(request)
             response.headers.update({'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"})
@@ -68,7 +70,7 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
     @app.get('/v1/openapi.json')
     async def openapi():return app.openapi()
     @app.get('/v1/capabilities')
-    async def capabilities():return {'version':__version__,'formats':sorted(FORMATS),'core':['scrape','map','batch','crawl','jobs','events','credentials','artifacts','monitors'],'browser':bool(cfg.browser_endpoint),'ai_extraction':bool(cfg.provider_endpoint and cfg.provider_model),'search':bool(cfg.search_provider),'telemetry':False,'compatibility':'docs/compatibility.md'}
+    async def capabilities():return {'version':__version__,'formats':sorted(FORMATS),'core':['scrape','map','batch','crawl','jobs','events','credentials','artifacts','monitors'],'browser':bool(cfg.browser_endpoint),'ai_extraction':bool(cfg.provider_model and (cfg.provider_endpoint or cfg.provider_kind in ('gemini','vertex'))),'agent':bool(cfg.provider_model),'search':bool(cfg.search_provider),'telemetry':False,'compatibility':'docs/compatibility.md'}
     @app.post('/v1/scrape')
     async def scrape(value:ScrapeRequest,request:Request):
         async with asyncio.timeout(value.options.browser_timeout_seconds+value.options.timeout_seconds+125):
@@ -78,9 +80,29 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
     @app.post('/v1/monitors',status_code=201)
     async def monitor_create(request:Request):
         raw=await request.json()
-        if set(raw)-{'job','schedule','timezone'}:raise ScrapeError('INVALID_REQUEST','Unknown monitor option')
+        if set(raw)-{'job','schedule','timezone','notifications'}:raise ScrapeError('INVALID_REQUEST','Unknown monitor option')
         job=JobRequest.model_validate(raw.get('job',{}))
-        return automation.create_monitor(request.state.tenant,job,raw.get('schedule',''),raw.get('timezone','UTC'))
+        return automation.create_monitor(request.state.tenant,job,raw.get('schedule',''),raw.get('timezone','UTC'),raw.get('notifications',[]))
+    @app.put('/v1/notification-profiles/{name}')
+    async def notification_profile(name:str,request:Request):
+        from .notifications import Notifications
+        Notifications(eng).put(request.state.tenant,name,await request.json());return {'name':name,'configured':True}
+    @app.delete('/v1/notification-profiles/{name}',status_code=204)
+    async def notification_delete(name:str,request:Request):
+        with db.pool.connection() as c:c.execute('DELETE FROM hs_notification_profiles WHERE tenant=%s AND name=%s',(request.state.tenant,name))
+        return Response(status_code=204)
+    @app.patch('/v1/monitors/{mid}')
+    async def monitor_update(mid:str,request:Request):
+        value=await request.json()
+        if set(value)!={'active'} or type(value['active']) is not bool:raise ScrapeError('INVALID_REQUEST','Provide an active boolean')
+        with db.pool.connection() as c:
+            row=c.execute('UPDATE hs_monitors SET active=%s WHERE id=%s AND tenant=%s RETURNING id,active',(value['active'],mid,request.state.tenant)).fetchone()
+        if not row:raise ScrapeError('NOT_FOUND','Monitor not found',404)
+        return row
+    @app.get('/v1/deliveries')
+    async def deliveries(request:Request):
+        with db.pool.connection() as c:rows=c.execute('SELECT id,state,attempts,retry_at FROM hs_outbox WHERE tenant=%s ORDER BY id DESC LIMIT 100',(request.state.tenant,)).fetchall()
+        return {'data':rows}
     @app.get('/v1/monitors')
     async def monitor_list(request:Request):
         with db.pool.connection() as c:rows=c.execute('SELECT * FROM hs_monitors WHERE tenant=%s ORDER BY id',(request.state.tenant,)).fetchall()
@@ -92,22 +114,31 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
     async def submit(value,request):
         if value.webhook and len(automation.key)<32:raise ScrapeError('WEBHOOK_NOT_CONFIGURED','Configure an independent webhook signing key',503)
         if value.kind=='extract' and 'json' not in value.options.formats:value.options.formats.append('json')
-        if value.kind in ('search','agent'):
+        if value.kind=='search':
             found=await eng.providers.search(value.query,limit=min(value.max_pages,100));value.urls=[v['url'] for v in found['results']]
-        if not value.urls:raise ScrapeError('INVALID_REQUEST','At least one seed URL is required')
-        if value.kind=='agent':raise ScrapeError('CAPABILITY_UNAVAILABLE','Autonomous agent release is not enabled in the core release',501)
+        if not value.urls and value.kind!='agent':raise ScrapeError('INVALID_REQUEST','At least one seed URL is required')
+        if value.kind=='agent' and not cfg.provider_model:raise ScrapeError('CAPABILITY_UNAVAILABLE','Agent workflows need a configured model',503)
         if not value.options.respect_robots and not cfg.allow_robots_override:raise ScrapeError('POLICY_BLOCKED','Robots override requires operator configuration',403)
         row=db.create(request.state.tenant,value,request.headers.get('idempotency-key'))
         return JSONResponse(row,status_code=202)
     @app.post('/v1/jobs',status_code=202)
     async def jobs(value:JobRequest,request:Request):return await submit(value,request)
-    for kind in ('batch','crawl','map','extract'):
+    for kind in ('batch','crawl','map','extract','agent'):
         def endpoint(k):
             async def handler(value:JobRequest,request:Request):
                 if value.kind!=k:raise ScrapeError('INVALID_REQUEST','Job kind must match the endpoint')
                 return await submit(value,request)
             return handler
         app.add_api_route('/v1/'+kind,endpoint(kind),methods=['POST'],status_code=202,name=kind)
+    @app.post('/v1/parse/upload')
+    async def parse_upload(request:Request):
+        import uuid
+        body=await request.body()
+        if not body:raise ScrapeError('INVALID_DOCUMENT','Upload a nonempty document')
+        return await eng.parse_document(request.state.tenant,body,request.headers.get('content-type','application/octet-stream').split(';')[0],'urn:houndscraper:upload:'+uuid.uuid4().hex,Options())
+    @app.post('/v1/parse')
+    async def parse_url(value:ScrapeRequest,request:Request):
+        return await eng.scrape(request.state.tenant,value.url,value.options)
     @app.post('/v1/search')
     async def search(value:SearchRequest,request:Request):
         result=await eng.providers.search(value.query,value.limit)
@@ -151,7 +182,7 @@ def create_app(settings=None,*,store=None,engine=None,run_worker=True):
         return StreamingResponse(stream(),media_type='text/event-stream')
     @app.get('/v1/artifacts/{aid}')
     async def artifact(aid:str,request:Request):
-        body,row=eng.artifacts.get(request.state.tenant,aid)
+        body,row=await asyncio.to_thread(eng.artifacts.get,request.state.tenant,aid)
         return Response(body,media_type=row['mime'],headers={'ETag':'"'+row['sha256']+'"','Content-Disposition':'attachment; filename="'+aid+'"'})
     @app.put('/v1/credentials/{name}')
     async def credential(name:str,request:Request):

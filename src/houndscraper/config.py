@@ -11,12 +11,13 @@ class Settings:
     keys: dict = field(default_factory=lambda: json.loads(os.environ.get('HOUNDSCRAPER_API_KEYS', '{}')))
     storage: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_STORAGE', './data'))
     encryption_key: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_ENCRYPTION_KEY', ''))
-    workers: int = 8
+    workers: int = field(default_factory=lambda:int(os.environ.get('HOUNDSCRAPER_WORKERS','8')))
     lease_seconds: int = 120
-    retention_days: int = 7
-    allow_robots_override: bool = False
+    retention_days: int = field(default_factory=lambda:int(os.environ.get('HOUNDSCRAPER_RETENTION_DAYS','7')))
+    allow_robots_override: bool = field(default_factory=lambda:os.environ.get('HOUNDSCRAPER_ALLOW_ROBOTS_OVERRIDE','false')=='true')
     browser_endpoint: str = field(default_factory=lambda: os.environ.get('HOUNDBROWSER_ENDPOINT', ''))
     browser_key: str = field(default_factory=lambda: os.environ.get('HOUNDBROWSER_SERVICE_KEY', ''))
+    provider_kind: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_LLM_PROVIDER','openai'))
     provider_endpoint: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_LLM_ENDPOINT', ''))
     provider_key: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_LLM_KEY', ''))
     provider_model: str = field(default_factory=lambda: os.environ.get('HOUNDSCRAPER_LLM_MODEL', ''))
@@ -29,6 +30,7 @@ class Settings:
             raise ValueError('Configure PostgreSQL and independent tenant API keys of at least 32 characters')
         if self.workers < 1 or self.workers > 64:
             raise ValueError('Worker concurrency must be 1–64')
+        if not 1<=self.retention_days<=365:raise ValueError('Retention must be 1–365 days')
         return self
 
     def tenant(self, authorization):

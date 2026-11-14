@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS hs_results (
 CREATE TABLE IF NOT EXISTS hs_events (
  id bigserial PRIMARY KEY, job text REFERENCES hs_jobs(id) ON DELETE CASCADE,
  kind text NOT NULL, value jsonb NOT NULL, created double precision NOT NULL);
+CREATE TABLE IF NOT EXISTS hs_network_slots (slot integer PRIMARY KEY, owner text, lease_until double precision NOT NULL DEFAULT 0);
+INSERT INTO hs_network_slots(slot) SELECT generate_series(1,64) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS hs_origin_slots (origin text PRIMARY KEY, owner text, lease_until double precision NOT NULL DEFAULT 0, retry_at double precision NOT NULL DEFAULT 0, last_start double precision NOT NULL DEFAULT 0, delay double precision NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS hs_notification_profiles (tenant text NOT NULL,name text NOT NULL,ciphertext text NOT NULL,PRIMARY KEY(tenant,name));
+CREATE TABLE IF NOT EXISTS hs_agent_state (job text PRIMARY KEY REFERENCES hs_jobs(id) ON DELETE CASCADE, state jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS hs_cache (
  tenant text NOT NULL, key text NOT NULL, value jsonb NOT NULL,
  created double precision NOT NULL, PRIMARY KEY(tenant,key));
@@ -55,7 +60,9 @@ class Store:
     def __init__(self,url):
         self.pool=ConnectionPool(url,min_size=1,max_size=16,open=True,kwargs={'row_factory':dict_row})
         self.pool.wait(timeout=15)
-        with self.pool.connection() as c:c.execute(SCHEMA)
+        with self.pool.connection() as c:
+            c.execute('SELECT pg_advisory_xact_lock(6741453456134)')
+            c.execute(SCHEMA)
     def close(self):self.pool.close()
     def event(self,c,job,kind,value):
         c.execute('INSERT INTO hs_events(job,kind,value,created) VALUES(%s,%s,%s,%s)',(job,kind,Jsonb(value),time.time()))
@@ -68,7 +75,8 @@ class Store:
                 row=c.execute('SELECT * FROM hs_jobs WHERE tenant=%s AND idempotency=%s',(tenant,idempotency)).fetchone()
                 if row['request_hash']!=rh:raise ScrapeError('IDEMPOTENCY_CONFLICT','The key was already used with another request',409)
                 return row
-            for url in body.get('urls',[]):c.execute('INSERT INTO hs_frontier(job,url,depth) VALUES(%s,%s,0) ON CONFLICT DO NOTHING',(jid,url))
+            seeds=['urn:houndscraper:agent:'+jid] if body['kind']=='agent' else body.get('urls',[])
+            for url in seeds:c.execute('INSERT INTO hs_frontier(job,url,depth) VALUES(%s,%s,0) ON CONFLICT DO NOTHING',(jid,url))
             self.event(c,jid,'created',{'kind':body['kind']})
             return row
     def get(self,tenant,jid):
@@ -84,7 +92,7 @@ class Store:
             if not row:return None
             if row['bytes']>=row['request']['max_download_bytes'] or row['spent_ms']>=row['request']['max_seconds']*1000:
                 c.execute("UPDATE hs_jobs SET status='partial',reason='BUDGET_EXHAUSTED',updated=%s WHERE id=%s",(now,row['job']));return None
-            allowance=min(row['request']['options']['max_bytes'],row['request']['max_download_bytes']-row['bytes']-row['reserved_bytes'])
+            allowance=min(row['request']['max_download_bytes'] if row['kind']=='agent' else row['request']['options']['max_bytes'],row['request']['max_download_bytes']-row['bytes']-row['reserved_bytes'])
             if allowance<=0:return None
             c.execute("UPDATE hs_frontier SET state='leased',lease=%s,lease_until=%s,attempts=attempts+1,allowed_bytes=%s WHERE job=%s AND url=%s",(lease,now+lease_seconds,allowance,row['job'],row['url']))
             c.execute("UPDATE hs_jobs SET status='running',inflight=inflight+1,reserved_bytes=reserved_bytes+%s,updated=%s WHERE id=%s",(allowance,now,row['job']))
@@ -106,7 +114,7 @@ class Store:
             c.execute("UPDATE hs_frontier SET state='done',lease=NULL,lease_until=NULL WHERE job=%s AND url=%s",(item['job'],item['url']))
             c.execute('INSERT INTO hs_results(job,url,result,hash) VALUES(%s,%s,%s,%s) ON CONFLICT(job,url) DO NOTHING',(item['job'],item['url'],Jsonb(result),result.get('sha256')))
             for url,depth in links:c.execute('INSERT INTO hs_frontier(job,url,depth) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING',(item['job'],url,depth))
-            c.execute('UPDATE hs_jobs SET processed=processed+1,inflight=GREATEST(0,inflight-1),reserved_bytes=GREATEST(0,reserved_bytes-%s),errors=errors+%s,bytes=bytes+%s,spent_ms=spent_ms+%s,updated=%s WHERE id=%s',(item['allowed_bytes'],int(error),result.get('usage',{}).get('download_bytes',0),elapsed_ms,time.time(),item['job']))
+            c.execute('UPDATE hs_jobs SET processed=processed+1,inflight=GREATEST(0,inflight-1),reserved_bytes=GREATEST(0,reserved_bytes-%s),errors=errors+%s,bytes=bytes+%s,spent_ms=spent_ms+%s,updated=%s WHERE id=%s',(item['allowed_bytes'],int(error),result.get('usage',{}).get('budget_download_bytes',result.get('usage',{}).get('download_bytes',0)),elapsed_ms,time.time(),item['job']))
             self.event(c,item['job'],'page_failed' if error else 'page_completed',{'url':item['url'],'error':result.get('error')})
             return True
     def retry(self,item,delay):
@@ -142,6 +150,11 @@ class Store:
                 request=row['request'];request.update(updates or {})
                 from .models import JobRequest
                 request=JobRequest.model_validate(request).model_dump()
+                if row['kind']=='agent':
+                    control='urn:houndscraper:agent:'+jid
+                    previous=c.execute('DELETE FROM hs_results WHERE job=%s AND url=%s RETURNING result',(jid,control)).fetchone()
+                    c.execute("UPDATE hs_frontier SET state='queued',lease=NULL,lease_until=NULL WHERE job=%s AND url=%s",(jid,control))
+                    if previous:c.execute('UPDATE hs_jobs SET processed=GREATEST(0,processed-1),errors=GREATEST(0,errors-1) WHERE id=%s',(jid,))
                 c.execute("UPDATE hs_jobs SET status='queued',reason=NULL,request=%s,updated=%s WHERE id=%s",(Jsonb(request),time.time(),jid))
             else:
                 if row['status'] not in ('queued','running','paused'):raise ScrapeError('INVALID_STATE','This job is already terminal',409)
@@ -164,3 +177,21 @@ class Store:
         with self.pool.connection() as c:
             c.execute("DELETE FROM hs_jobs WHERE updated<%s AND status IN ('completed','cancelled','partial')",(before,))
             c.execute('DELETE FROM hs_cache WHERE created<%s',(before,))
+
+    def acquire_network(self,target,maximum,seconds):
+        now=time.time();owner=uuid.uuid4().hex
+        with self.pool.connection() as c:
+            c.execute('INSERT INTO hs_origin_slots(origin) VALUES(%s) ON CONFLICT DO NOTHING',(target,))
+            host=c.execute('SELECT * FROM hs_origin_slots WHERE origin=%s FOR UPDATE SKIP LOCKED',(target,)).fetchone()
+            if not host or host['lease_until']>now or max(host['retry_at'],host['last_start']+host['delay'])>now:return None
+            slot=c.execute('SELECT slot FROM hs_network_slots WHERE slot<=%s AND lease_until<=%s ORDER BY slot FOR UPDATE SKIP LOCKED LIMIT 1',(maximum,now)).fetchone()
+            if not slot:return None
+            c.execute('UPDATE hs_network_slots SET owner=%s,lease_until=%s WHERE slot=%s',(owner,now+seconds,slot['slot']))
+            c.execute('UPDATE hs_origin_slots SET owner=%s,lease_until=%s,last_start=%s WHERE origin=%s',(owner,now+seconds,now,target))
+            return {'owner':owner,'slot':slot['slot'],'origin':target}
+    def release_network(self,lease,retry_after=0):
+        with self.pool.connection() as c:
+            c.execute('UPDATE hs_network_slots SET owner=NULL,lease_until=0 WHERE slot=%s AND owner=%s',(lease['slot'],lease['owner']))
+            c.execute('UPDATE hs_origin_slots SET owner=NULL,lease_until=0,retry_at=GREATEST(retry_at,%s) WHERE origin=%s AND owner=%s',(time.time()+retry_after,lease['origin'],lease['owner']))
+    def origin_delay(self,target,delay):
+        with self.pool.connection() as c:c.execute('INSERT INTO hs_origin_slots(origin,delay) VALUES(%s,%s) ON CONFLICT(origin) DO UPDATE SET delay=excluded.delay',(target,max(0,delay)))
