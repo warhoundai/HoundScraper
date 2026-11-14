@@ -208,3 +208,18 @@ async def test_model_exhaustion_pauses_frontier_and_resumes_with_retained_spendi
     assert store.get('alpha',job['id'])['status']=='paused' and not store.results('alpha',job['id'])
     resumed=store.transition('alpha',job['id'],'resume',{'max_provider_tokens':20000})
     assert resumed['status']=='queued' and store.claim()['url']=='https://fixture.example/'
+
+def test_epub_spine_order_and_odt_text_without_external_resources(tmp_path):
+    import zipfile
+    from houndscraper.archive_documents import convert
+    path=tmp_path/'fixture.epub'
+    with zipfile.ZipFile(path,'w') as z:
+        z.writestr('META-INF/container.xml','<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/book.opf"/></rootfiles></container>')
+        z.writestr('OEBPS/book.opf','<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="two"/><itemref idref="one"/></spine></package>')
+        z.writestr('OEBPS/one.xhtml','<h1>First chapter</h1><script>unsafe()</script>');z.writestr('OEBPS/two.xhtml','<p>Second chapter</p>')
+    result=convert(path);assert result['markdown'].index('Second')<result['markdown'].index('First') and 'unsafe' not in result['markdown']
+    path=tmp_path/'fixture.odt'
+    with zipfile.ZipFile(path,'w') as z:z.writestr('content.xml','<document xmlns:text="urn:text"><text:p>Invoice total 42 dollars</text:p></document>')
+    assert '42' in convert(path)['markdown']
+    with zipfile.ZipFile(path,'w') as z:z.writestr('content.xml','<!DOCTYPE e [<!ENTITY x SYSTEM "file:///etc/passwd">]><document>&x;</document>')
+    with pytest.raises(ValueError):convert(path)

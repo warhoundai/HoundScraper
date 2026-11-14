@@ -8,6 +8,9 @@ if __name__=='__main__':
     import os
     from pathlib import Path
     import contextlib
+    if Path(sys.argv[1]).suffix.lower() in ('.epub','.odt'):
+        from .archive_documents import convert
+        print(json.dumps(convert(Path(sys.argv[1])),ensure_ascii=False));sys.exit(0)
     with contextlib.redirect_stdout(sys.stderr):
         from docling.document_converter import DocumentConverter,PdfFormatOption,AudioFormatOption
         from docling.datamodel.base_models import InputFormat

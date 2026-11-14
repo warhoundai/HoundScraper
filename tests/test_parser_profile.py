@@ -38,3 +38,15 @@ def test_real_audio_transcription(tmp_path):
         row=next_row
     wer=row[-1]/len(expected)
     assert wer<=.2,{'word_error_rate':wer,'transcript':result['markdown']}
+
+def test_real_spreadsheet_and_presentation(tmp_path):
+    from openpyxl import Workbook
+    from pptx import Presentation
+    workbook=Workbook();workbook.active.append(['Item','Amount']);workbook.active.append(['Invoice',42]);sheet=tmp_path/'fixture.xlsx';workbook.save(sheet)
+    assert '42' in convert(sheet)['markdown']
+    slides=Presentation();slide=slides.slides.add_slide(slides.slide_layouts[1]);slide.shapes.title.text='Invoice evidence';slide.placeholders[1].text='Invoice total 42 dollars';presentation=tmp_path/'fixture.pptx';slides.save(presentation)
+    assert '42' in convert(presentation)['markdown']
+
+def test_real_csv_table(tmp_path):
+    path=tmp_path/'fixture.csv';path.write_text('item,amount\ninvoice,42\n')
+    result=convert(path);assert '42' in result['markdown'] and 'invoice' in result['markdown'].lower()
