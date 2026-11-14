@@ -11,12 +11,15 @@ def extract(body,url,options,rendered=False):
     soup=BeautifulSoup(body,'html.parser')
     title=soup.title.get_text(' ',strip=True) if soup.title else ''
     language=soup.html.get('lang') if soup.html else None
-    links=[];images=[]
+    links=[];images=[];discovery_truncated=False
     for tag,attribute,output in [('a','href',links),('img','src',images)]:
-        for el in soup.find_all(tag):
+        seen=set()
+        for el in soup.find_all(tag,limit=1001):
+            if len(output)>=1000:discovery_truncated=True;break
             try:
                 target=normalize_url(el.get(attribute,''),url)
-                if target not in [x['url'] for x in output]:output.append({'url':target,'text':el.get_text(' ',strip=True) if tag=='a' else el.get('alt','')})
+                if target not in seen:
+                    seen.add(target);output.append({'url':target,'text':el.get_text(' ',strip=True) if tag=='a' else el.get('alt','')})
             except Exception:continue
     ld=[]
     for el in soup.select('script[type="application/ld+json"]'):
@@ -41,7 +44,7 @@ def extract(body,url,options,rendered=False):
         root=BeautifulSoup(selected,'html.parser')
     elif options.only_main_content:root=soup.find('main') or soup.find('article') or soup.body or soup
     else:root=soup.body or soup
-    for node in root.select('script,style,noscript,template,nav,footer'):
+    for node in root.select('script,style,noscript,template'+(',nav,footer' if options.only_main_content and not options.include_selectors else '')):
         node.decompose()
     html=str(root);text=root.get_text('\n',strip=True)
     md=markdownify(html,heading_style='ATX',bullets='-').strip()
@@ -49,7 +52,7 @@ def extract(body,url,options,rendered=False):
     product=next((v for item in ld for v in (item if isinstance(item,list) else [item]) if isinstance(v,dict) and 'Product' in str(v.get('@type',''))),None)
     candidates={'markdown':md,'text':text,'html':html,'rawHtml':body.decode('utf-8',errors='replace') if isinstance(body,bytes) else body,'renderedHtml':(body.decode('utf-8',errors='replace') if isinstance(body,bytes) else body) if rendered else None,'rawBase64':base64.b64encode(body if isinstance(body,bytes) else body.encode()).decode(),'links':links,'images':images,'metadata':metadata,'tables':tables,'jsonld':ld,'attributes':attrs,'product':product}
     outputs={k:v for k,v in candidates.items() if k in options.formats}
-    warnings=[]
+    warnings=['Discovery truncated at 1,000 links/images per page'] if discovery_truncated else []
     if 'product' in options.formats and product is None:warnings.append('No Product structured data found; no product facts were invented')
     if 'renderedHtml' in options.formats and not rendered:warnings.append('Rendered HTML requires browser rendering')
     return outputs,{'text':text,'markdown':md,'metadata':metadata,'links':links,'images':images,'jsonld':ld},warnings

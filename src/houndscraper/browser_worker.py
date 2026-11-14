@@ -42,6 +42,12 @@ def create_browser_app(key=None,proxy_factory=None):
         if any(k.lower() not in ('authorization','cookie','accept-language') for k in headers):raise ScrapeError('INVALID_HEADERS','Unsupported credential header')
         async with capacity:
             from playwright.async_api import async_playwright
+            parent=asyncio.current_task()
+            async def disconnected():
+                while True:
+                    await asyncio.sleep(.5)
+                    if await request.is_disconnected():parent.cancel();return
+            disconnect_watch=asyncio.create_task(disconnected())
             proxy=proxy_factory();browser=None;p=None
             original_connector=proxy.connector;downloaded=0;available=int(opts.get('max_bytes',33554432))
             class BudgetReader:
@@ -96,4 +102,5 @@ def create_browser_app(key=None,proxy_factory=None):
                 if browser:await browser.close()
                 if p:await p.stop()
                 await proxy.close()
+                disconnect_watch.cancel();await asyncio.gather(disconnect_watch,return_exceptions=True)
     return app

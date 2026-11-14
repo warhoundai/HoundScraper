@@ -25,6 +25,32 @@ class Options(BaseModel):
     timezone: str = 'UTC'
     wait_selector: str | None = Field(None, max_length=500)
 
+    @field_validator('include_selectors','exclude_selectors')
+    @classmethod
+    def valid_selectors(cls, values):
+        import soupsieve
+        for value in values:
+            if len(value)>500:raise ValueError('Selector exceeds 500 characters')
+            try:soupsieve.compile(value)
+            except Exception:raise ValueError('Invalid CSS selector')
+        return values
+
+    @field_validator('attributes')
+    @classmethod
+    def valid_attributes(cls, values):
+        import soupsieve
+        for value in values:
+            if set(value)!={'selector','attribute'} or len(value['selector'])>500 or len(value['attribute'])>100:raise ValueError('Attributes require bounded selector and attribute fields')
+            try:soupsieve.compile(value['selector'])
+            except Exception:raise ValueError('Invalid attribute selector')
+        return values
+
+    @field_validator('viewport')
+    @classmethod
+    def valid_viewport(cls, value):
+        if set(value)!={'width','height'} or any(type(v) is not int for v in value.values()) or not 200<=value['width']<=3840 or not 200<=value['height']<=2160:raise ValueError('Use a bounded width/height viewport')
+        return value
+
     @field_validator('json_schema')
     @classmethod
     def safe_schema(cls, schema):

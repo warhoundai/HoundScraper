@@ -33,6 +33,12 @@ def create_parser_app():
             with tempfile.TemporaryDirectory() as directory:
                 path=Path(directory)/('document'+TYPES[mime]);path.write_bytes(body)
                 process=await asyncio.create_subprocess_exec('python','-m','houndscraper.parser_process',str(path),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+                parent=asyncio.current_task()
+                async def disconnected():
+                    while True:
+                        await asyncio.sleep(.5)
+                        if await request.is_disconnected():parent.cancel();return
+                watch=asyncio.create_task(disconnected())
                 try:
                     out,_=await asyncio.wait_for(process.communicate(),120)
                     if process.returncode or len(out)>16777216:return JSONResponse({'error':'PARSING_FAILED'},status_code=422)
@@ -40,4 +46,6 @@ def create_parser_app():
                     return json.loads(out)
                 except (TimeoutError,asyncio.CancelledError):
                     process.kill();await process.wait();raise
+                finally:
+                    watch.cancel();await asyncio.gather(watch,return_exceptions=True)
     return app

@@ -56,7 +56,7 @@ class Worker:
             if item['depth']==0 and item['kind'] in ('crawl','map'):
                 sitemap=origin(item['url'])+'/sitemap.xml'
                 if sitemap!=item['url']:links.append((sitemap,item['depth']))
-            self.store.finish(item,result,links,elapsed_ms=round((time.monotonic()-start)*1000))
+            self.store.finish(item,result,links,error=not result.get('complete',True),elapsed_ms=round((time.monotonic()-start)*1000))
         except asyncio.CancelledError:
             self.store.retry(item,0)
             raise

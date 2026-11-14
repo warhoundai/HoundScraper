@@ -196,3 +196,11 @@ async def test_monitor_diff_and_webhook_signature(store,settings,monkeypatch):
     body=sent['body'];headers=sent['headers'];expected=hmac.new(('w'*40).encode(),(headers['X-Hound-Timestamp']+'.'+headers['X-Hound-Event']+'.').encode()+body,hashlib.sha256).hexdigest()
     assert headers['X-Hound-Signature']=='sha256='+expected
     with store.pool.connection() as c:assert c.execute('SELECT state FROM hs_outbox').fetchone()['state']=='delivered'
+
+@pytest.mark.parametrize('value',[{'json_schema':{'$ref':'http://127.0.0.1/secret'}},{'include_selectors':['[invalid']},{'attributes':[{'selector':'main'}]},{'viewport':{'width':100000,'height':900}}])
+def test_unsafe_or_invalid_options_fail_before_execution(value):
+    with pytest.raises(ValueError):Options.model_validate(value)
+
+def test_full_content_preserves_navigation_when_requested():
+    out,_,_=extract(HTML,'https://fixture.example/',Options(formats=['text'],only_main_content=False))
+    assert 'noise' in out['text']
