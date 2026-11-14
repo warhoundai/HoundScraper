@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 [project]
 name = "houndscraper"
-version = "0.2.0.dev1"
+version = "0.2.0rc1"
 description = "Local-first web content extraction and durable crawling for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
