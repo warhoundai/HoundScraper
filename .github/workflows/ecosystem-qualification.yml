@@ -1,0 +1,34 @@
+name: Downstream agent qualification
+on: [workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  live-search-answer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_PASSWORD: test-only, POSTGRES_DB: houndsearch_test}
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with: {python-version: '3.12'}
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.HOUNDSCRAPER_GCP_WIF }}
+          service_account: ${{ vars.HOUNDSCRAPER_GCP_SERVICE_ACCOUNT }}
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e . && pip install 'houndsearch[vertex] @ git+https://github.com/warhoundai/HoundSearch.git@47d64d98702b51420aa613b915fcfa58b853222d'
+      - name: Verify real downstream model usage and evidence
+        env:
+          HOUND_ECOSYSTEM_LIVE: '1'
+          HOUNDSEARCH_TEST_DATABASE_URL: postgresql://postgres:test-only@127.0.0.1:5432/houndsearch_test
+          HOUNDSCRAPER_GCP_MODEL: ${{ vars.HOUNDSCRAPER_GCP_MODEL }}
+          HOUNDSCRAPER_VERTEX_PROJECT: ${{ vars.HOUNDSCRAPER_GCP_PROJECT }}
+        run: pytest -q -s tests/test_ecosystem_live.py
