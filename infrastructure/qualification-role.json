@@ -10,7 +10,7 @@
     },
     "TestBranch": {
       "Type": "String",
-      "Default": "feature/advanced-extraction"
+      "Default": "main"
     }
   },
   "Resources": {
